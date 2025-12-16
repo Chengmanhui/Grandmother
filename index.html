@@ -92,10 +92,25 @@
       window.speechSynthesis.speak(utterance);
     };
 
+    // Homophone Mapping Table
+    const HOMOPHONE_MAP = {
+      '良': '量', '樑': '量',
+      '智': '志',
+      '為': '偉', '惠': '偉',
+      '筠': '軍'
+    };
+
+    // Helper to normalize text (lowercase, remove spaces, apply homophones)
+    const normalizeForMatching = (text) => {
+      if (!text) return '';
+      let str = text.replace(/\s+/g, '').toLowerCase();
+      // Replace characters based on map
+      return str.split('').map(char => HOMOPHONE_MAP[char] || char).join('');
+    };
+
     // --- HOOKS ---
     const useContacts = () => {
       // Lazy initialization: Read from localStorage BEFORE initial render
-      // This ensures contacts are available immediately and persist across refreshes
       const [contacts, setContacts] = useState(() => {
         try {
           const stored = localStorage.getItem(STORAGE_KEY);
@@ -105,7 +120,6 @@
         } catch (e) {
           console.error("Failed to parse contacts from local storage", e);
         }
-        // Fallback to initial contacts only if storage is empty
         return INITIAL_CONTACTS;
       });
 
@@ -162,11 +176,44 @@
 
       const findContact = useCallback((spokenName) => {
         if (!spokenName) return undefined;
-        const normalizedSpoken = spokenName.replace(/\s+/g, '').toLowerCase();
-        return contacts.find(contact => {
-          const normalizedContact = contact.name.replace(/\s+/g, '').toLowerCase();
+        
+        const normalizedSpoken = normalizeForMatching(spokenName);
+        
+        // 1. Direct Substring Match (Highest Priority)
+        // Checks if normalized spoken text is inside contact name or vice versa
+        // Example: Spoken "志強" matches Contact "陳志強" (matches homophone '智' too)
+        const directMatch = contacts.find(contact => {
+          const normalizedContact = normalizeForMatching(contact.name);
           return normalizedSpoken.includes(normalizedContact) || normalizedContact.includes(normalizedSpoken);
         });
+
+        if (directMatch) return directMatch;
+
+        // 2. Fuzzy Match (Similarity Score)
+        // If no direct substring match, find the contact with the most matching characters.
+        // Requirement: "Choose the most similar option if one character is matched"
+        let bestCandidate = undefined;
+        let maxOverlap = 0;
+
+        contacts.forEach(contact => {
+          const normalizedContact = normalizeForMatching(contact.name);
+          let currentOverlap = 0;
+
+          // Count how many characters from the contact appear in the spoken text
+          for (let char of normalizedContact) {
+            if (normalizedSpoken.includes(char)) {
+              currentOverlap++;
+            }
+          }
+
+          // Must have at least 1 character match
+          if (currentOverlap >= 1 && currentOverlap > maxOverlap) {
+            maxOverlap = currentOverlap;
+            bestCandidate = contact;
+          }
+        });
+
+        return bestCandidate;
       }, [contacts]);
 
       return { contacts, addContact, removeContact, findContact, syncContacts };
