@@ -64,17 +64,27 @@
     const IconRefreshCw = ({ className, size }) => (
       <svg xmlns="http://www.w3.org/2000/svg" width={size || 24} height={size || 24} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
     );
+    const IconStar = ({ className, size, fill }) => (
+      <svg xmlns="http://www.w3.org/2000/svg" width={size || 24} height={size || 24} viewBox="0 0 24 24" fill={fill ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+    );
 
     // --- CONSTANTS ---
     const INITIAL_CONTACTS = [
-      { id: '1', name: '乖孫', phoneNumber: '12345678' },
-      { id: '2', name: '阿仔', phoneNumber: '87654321' },
-      { id: '3', name: '阿女', phoneNumber: '98765432' },
-      { id: '4', name: '醫生', phoneNumber: '999' },
+      { id: '1', name: '乖孫', phoneNumber: '12345678', isFavorite: true },
+      { id: '2', name: '阿仔', phoneNumber: '87654321', isFavorite: false },
+      { id: '3', name: '阿女', phoneNumber: '98765432', isFavorite: false },
+      { id: '4', name: '醫生', phoneNumber: '999', isFavorite: true },
     ];
     const SPEECH_LANG = 'yue-Hant-HK'; // Cantonese Hong Kong
     const TTS_LANG = 'zh-HK';
     const STORAGE_KEY = 'grandma_app_contacts';
+
+    // Scoring Weights
+    const SCORES = {
+      PER_CHAR_MATCH: 1000,
+      EXACT_LENGTH: 500,
+      IS_FAVORITE: 300
+    };
 
     // --- UTILS ---
     const speakText = (text) => {
@@ -97,7 +107,8 @@
       '良': '量', '樑': '量',
       '智': '志',
       '為': '偉', '惠': '偉',
-      '筠': '軍'
+      '筠': '軍',
+      '欣': '恩' // Updated: Treated as same
     };
 
     // Helper to normalize text (lowercase, remove spaces, apply homophones)
@@ -115,7 +126,9 @@
         try {
           const stored = localStorage.getItem(STORAGE_KEY);
           if (stored) {
-            return JSON.parse(stored);
+            const parsed = JSON.parse(stored);
+            // Ensure isFavorite exists on older stored data
+            return parsed.map(c => ({ isFavorite: false, ...c }));
           }
         } catch (e) {
           console.error("Failed to parse contacts from local storage", e);
@@ -133,12 +146,19 @@
           id: Date.now().toString(),
           name,
           phoneNumber,
+          isFavorite: false,
         };
         setContacts(prev => [...prev, newContact]);
       }, []);
 
       const removeContact = useCallback((id) => {
         setContacts(prev => prev.filter(c => c.id !== id));
+      }, []);
+
+      const toggleFavorite = useCallback((id) => {
+        setContacts(prev => prev.map(c => 
+          c.id === id ? { ...c, isFavorite: !c.isFavorite } : c
+        ));
       }, []);
 
       const syncContacts = useCallback((incomingContacts) => {
@@ -153,6 +173,7 @@
             );
 
             if (existingIndex >= 0) {
+              // Update number if changed
               if (nextContacts[existingIndex].phoneNumber !== incoming.phoneNumber) {
                 nextContacts[existingIndex] = { 
                   ...nextContacts[existingIndex], 
@@ -164,7 +185,8 @@
               nextContacts.push({
                 id: Date.now().toString() + Math.random().toString(36).slice(2, 9),
                 name: normalizedIncomingName,
-                phoneNumber: incoming.phoneNumber
+                phoneNumber: incoming.phoneNumber,
+                isFavorite: false
               });
               changes = true;
             }
@@ -178,45 +200,55 @@
         if (!spokenName) return undefined;
         
         const normalizedSpoken = normalizeForMatching(spokenName);
+        const spokenLen = normalizedSpoken.length;
+
+        // Scoring System
+        // 1. Must match at least 1 character.
+        // 2. Score = (Overlap * 1000) + (ExactLengthMatch * 500) + (IsFavorite * 300)
         
-        // 1. Direct Substring Match (Highest Priority)
-        // Checks if normalized spoken text is inside contact name or vice versa
-        // Example: Spoken "志強" matches Contact "陳志強" (matches homophone '智' too)
-        const directMatch = contacts.find(contact => {
-          const normalizedContact = normalizeForMatching(contact.name);
-          return normalizedSpoken.includes(normalizedContact) || normalizedContact.includes(normalizedSpoken);
-        });
-
-        if (directMatch) return directMatch;
-
-        // 2. Fuzzy Match (Similarity Score)
-        // If no direct substring match, find the contact with the most matching characters.
-        // Requirement: "Choose the most similar option if one character is matched"
         let bestCandidate = undefined;
-        let maxOverlap = 0;
+        let bestScore = -1;
 
         contacts.forEach(contact => {
           const normalizedContact = normalizeForMatching(contact.name);
-          let currentOverlap = 0;
+          let matchCount = 0;
 
-          // Count how many characters from the contact appear in the spoken text
-          for (let char of normalizedContact) {
-            if (normalizedSpoken.includes(char)) {
-              currentOverlap++;
+          // Count Overlap
+          // Note: Simple inclusion check per character.
+          // To handle repeated chars correctly (like "Yan Yan"), we should technically exhaust tokens, 
+          // but for this simple fuzzy match, checking inclusion is usually sufficient for seniors.
+          // Let's do a slightly better check: for every char in spoken, see if it exists in contact.
+          for (let char of normalizedSpoken) {
+            if (normalizedContact.includes(char)) {
+              matchCount++;
             }
           }
+          
+          // Must have at least one character match to be considered
+          if (matchCount > 0) {
+            let score = matchCount * SCORES.PER_CHAR_MATCH;
 
-          // Must have at least 1 character match
-          if (currentOverlap >= 1 && currentOverlap > maxOverlap) {
-            maxOverlap = currentOverlap;
-            bestCandidate = contact;
+            // Bonus: Exact Length Match (Number of words/chars matches)
+            if (normalizedContact.length === spokenLen) {
+              score += SCORES.EXACT_LENGTH;
+            }
+
+            // Bonus: Frequent Use (Favorite)
+            if (contact.isFavorite) {
+              score += SCORES.IS_FAVORITE;
+            }
+
+            if (score > bestScore) {
+              bestScore = score;
+              bestCandidate = contact;
+            }
           }
         });
 
         return bestCandidate;
       }, [contacts]);
 
-      return { contacts, addContact, removeContact, findContact, syncContacts };
+      return { contacts, addContact, removeContact, toggleFavorite, findContact, syncContacts };
     };
 
     // --- COMPONENTS ---
@@ -366,7 +398,7 @@
     };
 
     // Contact Manager Component
-    const ContactManager = ({ contacts, onAdd, onRemove, onSync, isOpen, onClose }) => {
+    const ContactManager = ({ contacts, onAdd, onRemove, onToggleFavorite, onSync, isOpen, onClose }) => {
       const [newName, setNewName] = useState('');
       const [newNumber, setNewNumber] = useState('');
       const [isSupported, setIsSupported] = useState(false);
@@ -419,6 +451,12 @@
           setIsSyncing(false);
         }
       };
+
+      // Sort: Favorites first, then name
+      const sortedContacts = [...contacts].sort((a, b) => {
+        if (a.isFavorite === b.isFavorite) return 0;
+        return a.isFavorite ? -1 : 1;
+      });
 
       return (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
@@ -475,19 +513,31 @@
                 {contacts.length === 0 && (
                   <p className="text-gray-500 text-lg text-center py-8">暫時未有聯絡人</p>
                 )}
-                {contacts.map(contact => (
-                  <div key={contact.id} className="flex items-center justify-between p-4 bg-white border border-gray-200 rounded-xl shadow-sm">
-                    <div>
-                      <div className="text-2xl font-bold text-slate-800">{contact.name}</div>
+                {sortedContacts.map(contact => (
+                  <div key={contact.id} className={`flex items-center justify-between p-4 border rounded-xl shadow-sm ${contact.isFavorite ? 'bg-yellow-50 border-yellow-200' : 'bg-white border-gray-200'}`}>
+                    <div className="flex-1">
+                      <div className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+                        {contact.name}
+                        {contact.isFavorite && <IconStar size={20} className="text-yellow-500" fill={true} />}
+                      </div>
                       <div className="text-lg text-slate-500">{contact.phoneNumber}</div>
                     </div>
-                    <button
-                      onClick={() => onRemove(contact.id)}
-                      className="p-3 text-red-500 hover:bg-red-50 rounded-full transition-colors"
-                      aria-label="Delete"
-                    >
-                      <IconTrash2 size={28} />
-                    </button>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => onToggleFavorite(contact.id)}
+                        className={`p-3 rounded-full transition-colors ${contact.isFavorite ? 'text-yellow-500 hover:bg-yellow-100' : 'text-gray-300 hover:bg-gray-100 hover:text-yellow-400'}`}
+                        aria-label="Toggle Favorite"
+                      >
+                         <IconStar size={28} fill={contact.isFavorite} />
+                      </button>
+                      <button
+                        onClick={() => onRemove(contact.id)}
+                        className="p-3 text-red-500 hover:bg-red-50 rounded-full transition-colors"
+                        aria-label="Delete"
+                      >
+                        <IconTrash2 size={28} />
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -499,7 +549,7 @@
 
     // Main App Component
     const App = () => {
-      const { contacts, addContact, removeContact, findContact, syncContacts } = useContacts();
+      const { contacts, addContact, removeContact, toggleFavorite, findContact, syncContacts } = useContacts();
       const [feedback, setFeedback] = useState('');
       const [isManagerOpen, setIsManagerOpen] = useState(false);
       const [lastTranscript, setLastTranscript] = useState('');
@@ -591,6 +641,7 @@
             contacts={contacts}
             onAdd={addContact}
             onRemove={removeContact}
+            onToggleFavorite={toggleFavorite}
             onSync={syncContacts}
           />
         </div>
