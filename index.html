@@ -94,30 +94,25 @@
 
     // --- HOOKS ---
     const useContacts = () => {
-      const [contacts, setContacts] = useState([]);
-      const [isLoaded, setIsLoaded] = useState(false);
-
-      useEffect(() => {
-        const stored = localStorage.getItem(STORAGE_KEY);
-        if (stored) {
-          try {
-            setContacts(JSON.parse(stored));
-          } catch (e) {
-            console.error("Failed to parse contacts", e);
-            setContacts(INITIAL_CONTACTS);
+      // Lazy initialization: Read from localStorage BEFORE initial render
+      // This ensures contacts are available immediately and persist across refreshes
+      const [contacts, setContacts] = useState(() => {
+        try {
+          const stored = localStorage.getItem(STORAGE_KEY);
+          if (stored) {
+            return JSON.parse(stored);
           }
-        } else {
-          setContacts(INITIAL_CONTACTS);
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(INITIAL_CONTACTS));
+        } catch (e) {
+          console.error("Failed to parse contacts from local storage", e);
         }
-        setIsLoaded(true);
-      }, []);
+        // Fallback to initial contacts only if storage is empty
+        return INITIAL_CONTACTS;
+      });
 
+      // Save to LocalStorage whenever contacts change
       useEffect(() => {
-        if (isLoaded) {
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(contacts));
-        }
-      }, [contacts, isLoaded]);
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(contacts));
+      }, [contacts]);
 
       const addContact = useCallback((name, phoneNumber) => {
         const newContact = {
